@@ -15,7 +15,6 @@ import threading
 import time
 from difflib import SequenceMatcher
 import tempfile
-from werkzeug.serving import run_simple
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import assemblyai as aai
@@ -28,7 +27,7 @@ from pathlib import Path
 load_dotenv()
 
 # Initialize Flask app
-app = Flask(__name__)
+app = Flask(__name__, static_folder='public')
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -77,7 +76,7 @@ aai.settings.api_key = os.getenv('ASSEMBLYAI_API_KEY')
 
 # ML Model class definition
 class EnsembleModel:
-    def _init_(self, models):
+    def __init__(self, models):
         self.models = models
 
     def predict(self, X):
@@ -89,7 +88,7 @@ class EnsembleModel:
 
 # Cache Manager
 class CacheManager:
-    def _init_(self):
+    def __init__(self):
         self.caches = {
             'audio': {},
             'news': {},
@@ -153,7 +152,7 @@ cache_manager = CacheManager()
 
 # Buffer Management
 class OptimizedSlidingBuffer:
-    def _init_(self, max_duration=60000, chunk_size=10000):
+    def __init__(self, max_duration=60000, chunk_size=10000):
         self.max_duration = max_duration
         self.chunk_size = chunk_size
         self.chunks = []
@@ -192,7 +191,7 @@ class OptimizedSlidingBuffer:
 
 # Stream Processor
 class StreamProcessor:
-    def _init_(self, socket_id):
+    def __init__(self, socket_id):
         self.socket_id = socket_id
         self.buffer = OptimizedSlidingBuffer()
         self.processing_queue = queue.Queue()
@@ -819,9 +818,6 @@ def graceful_shutdown(signum, frame):
     # Exit
     os._exit(0)
 
-import signal
-signal.signal(signal.SIGTERM, graceful_shutdown)
-signal.signal(signal.SIGINT, graceful_shutdown)
 
 if __name__ == '__main__':
     try:
