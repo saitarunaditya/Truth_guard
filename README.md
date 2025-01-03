@@ -38,4 +38,6 @@ TruthGuard is a cutting-edge solution aimed at combating misinformation through 
 - Regulatory Bodies
 - Research Organizations
 
-TruthGuard aims to revolutionize the fight against misinformation by providing real-time, transparent, and scalable solutions for individuals and organizations seeking to ensure the integrity of information.
+## API and Library References
+- **AssemblyAI API:** [Transcribe an Audio File](https://www.assemblyai.com/docs/getting-started/transcribe-an-audio-file)
+- **RAPIDAPI Key for YouTube to MP3:** [YouTube to MP3 Download](https://rapidapi.com/CoolGuruji/api/youtube-to-mp3-download/playground/5902e92fe4b03f084dc0bb61)
