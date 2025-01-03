@@ -2,3 +2,4 @@ node_modules
 app.log
 error.log
 combined.log
+.env
