@@ -1,3 +1,4 @@
+# sampleapp.py code
 from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -22,6 +23,7 @@ from dotenv import load_dotenv
 import queue
 import concurrent.futures
 from pathlib import Path
+import shutil
 
 # Load environment variables
 load_dotenv()
@@ -189,85 +191,187 @@ class OptimizedSlidingBuffer:
             self.chunks = []
             self.total_duration = 0
 
+
+
+class AudioProcessor:
+    def __init__(self):
+        self.sample_rate = 16000
+        self.sample_width = 2
+        self.channels = 1
+
+    def normalize_audio(self, audio_data, target_sample_rate=16000):
+        # Convert to mono and normalize sample rate
+        with wave.open(io.BytesIO(audio_data), 'rb') as wav:
+            n_channels = wav.getnchannels()
+            sampwidth = wav.getsampwidth()
+            framerate = wav.getframerate()
+            frames = wav.readframes(wav.getnframes())
+
+            # Convert to mono if necessary
+            if n_channels == 2:
+                frames = audioop.tomono(frames, sampwidth, 0.5, 0.5)
+
+            # Resample if necessary
+            if framerate != target_sample_rate:
+                frames = audioop.ratecv(frames, sampwidth, 1, framerate, 
+                                      target_sample_rate, None)[0]
+
+            return frames
 # Stream Processor
 class StreamProcessor:
     def __init__(self, socket_id):
         self.socket_id = socket_id
-        self.buffer = OptimizedSlidingBuffer()
-        self.processing_queue = queue.Queue()
+        self.audio_buffer = io.BytesIO()
+        self.buffer_lock = threading.Lock()
         self.is_processing = False
         self.should_stop = False
+        self.audio_processor = AudioProcessor()
+        self.transcriber = aai.Transcriber()
+        self.processing_queue = queue.Queue()
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.last_processed = 0
+        self.temp_files = []
+        self.min_audio_length = MIN_AUDIO_LENGTH
         self.start_processing_thread()
+
 
     def start_processing_thread(self):
         self.thread_pool.submit(self._process_queue)
 
-    def process_chunk(self, chunk, duration):
-        if not self.buffer.add_chunk(chunk, duration):
+    def process_chunk(self, chunk):
+        if self.should_stop:
             return
 
-        self.processing_queue.put({
-            'buffer': self.buffer.get_buffer(),
-            'timestamp': time.time()
-        })
+        try:
+            with self.buffer_lock:
+                self.audio_buffer.write(chunk)
+                current_size = self.audio_buffer.tell()
 
+                # Process if buffer has enough data
+                if current_size >= CHUNK_SIZE * 10:  # Increased buffer size
+                    audio_data = self.audio_buffer.getvalue()
+                    self.audio_buffer = io.BytesIO()  # Reset buffer
+                    
+                    # Normalize audio
+                    normalized_audio = self.audio_processor.normalize_audio(audio_data)
+                    
+                    # Queue for processing
+                    self.processing_queue.put({
+                        'audio': normalized_audio,
+                        'timestamp': time.time()
+                    })
+
+        except Exception as e:
+            logger.error(f'Error processing chunk: {str(e)}')
+            socketio.emit('error', {
+                'error': 'Audio processing error',
+                'details': str(e)
+            }, room=self.socket_id)
+    
     def _process_queue(self):
         while not self.should_stop:
             try:
-                if self.is_processing:
-                    continue
-
                 item = self.processing_queue.get(timeout=1)
-                self.is_processing = True
-
-                self._process_audio(item['buffer'], item['timestamp'])
-
+                if item:
+                    self._process_audio(item['buffer'], item['timestamp'])
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f'Stream processing error: {str(e)}')
-                socketio.emit('error', {
-                    'error': 'Stream processing failed',
-                    'details': str(e)
-                }, room=self.socket_id)
-            finally:
-                self.is_processing = False
+                logger.error(f'Queue processing error: {str(e)}')
 
     def _process_audio(self, buffer, timestamp):
+        temp_file_path = None
         try:
+            # Create temp file with unique name
             with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
-                temp_file.write(buffer)
                 temp_file_path = temp_file.name
+                self.temp_files.append(temp_file_path)
+                temp_file.write(buffer)
+                
+                with wave.open(temp_file_path, 'wb') as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(16000)
+                    wav_file.writeframes(audio_data)
 
-            audio_file = aai.transcripts.upload_audio_file(temp_file_path)
-            transcript = aai.transcripts.create(
-                audio_file,
-                language_code='en'
+            # Log the file size for debugging
+            file_size = os.path.getsize(temp_file_path)
+            if file_size < 1024:  # Skip if too small
+                return
+            
+            config = aai.TranscriptionConfig(
+                punctuate=True,
+                format_text=True,
+                language_detection=True,
+                audio_start_from=self.last_processed
             )
 
-            processed_text = pipeline.transform([transcript.text])
-            prediction, confidence = ensemble_model.predict(processed_text)
+            # Transcribe
+            transcript = self.transcriber.transcribe(
+                temp_file_path,
+                config=config
+            )
 
-            socketio.emit('transcription', {
-                'text': transcript.text,
-                'analysis': {
-                    'prediction': bool(prediction[0]),
-                    'confidence': float(confidence[0])
-                },
-                'timestamp': timestamp
-            }, room=self.socket_id)
+            if transcript and transcript.text:
+                # Update last processed timestamp
+                self.last_processed = timestamp
+
+                # Process transcribed text
+                processed_text = pipeline.transform([transcript.text])
+                prediction, confidence = ensemble_model.predict(processed_text)
+
+                # Emit results
+                socketio.emit('transcription', {
+                    'text': transcript.text,
+                    'analysis': {
+                        'prediction': bool(prediction[0]),
+                        'confidence': float(confidence[0])
+                    },
+                    'timestamp': timestamp
+                }, room=self.socket_id)
 
         except Exception as e:
-            raise e
+            logger.error(f'Audio processing error: {str(e)}')
+            socketio.emit('error', {
+                'error': 'Audio processing failed',
+                'details': str(e)
+            }, room=self.socket_id)
         finally:
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    self.temp_files.remove(temp_file_path)
+                except Exception as e:
+                    logger.error(f'Error removing temp file: {str(e)}')
+
+    def stop(self):
+        self.should_stop = True
+        self.thread_pool.shutdown(wait=False)
+        
+        # Clear buffer
+        with self.buffer_lock:
+            self.audio_buffer = io.BytesIO()
+        
+        # Clean up temp files
+        for temp_file in self.temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as e:
+                logger.error(f'Error removing temp file during shutdown: {str(e)}')
+        self.temp_files.clear()
 
     def stop(self):
         self.should_stop = True
         self.thread_pool.shutdown(wait=False)
         self.buffer.clear()
+        for temp_file in self.temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as e:
+                logger.error(f'Error removing temp file during shutdown: {str(e)}')
+        self.temp_files.clear()
 
 # Load ML models with proper error handling
 try:
@@ -584,47 +688,67 @@ def transcribe_recorded():
         platform = detect_platform(video_url)
         logger.info(f'Starting transcription for {platform} video: {video_url}')
         
-        # Create temporary file for audio
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
-            temp_file_path = temp_file.name
+        # Create temporary directory for audio
+        temp_dir = tempfile.mkdtemp()
+        temp_file_path = os.path.join(temp_dir, 'audio.mp3')
 
-        # Download audio using yt-dlp
-        process = subprocess.Popen([
-            'yt-dlp',
-            '-x',
-            '--audio-format', 'mp3',
-            '--output', temp_file_path,
-            '--no-playlist',
-            video_url
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            # Download audio using yt-dlp
+            process = subprocess.run([
+                'yt-dlp',
+                '-x',
+                '--audio-format', 'mp3',
+                '--audio-quality', '0',
+                '--output', temp_file_path,
+                '--no-playlist',
+                '--force-overwrites',
+                '--no-warnings',
+                video_url
+            ], capture_output=True, text=True, check=True)
 
-        stdout, stderr = process.communicate()
-        
-        if process.returncode != 0:
-            raise Exception(f'Download failed: {stderr.decode()}')
+            # Verify file exists and has size
+            if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
+                raise Exception("Failed to download audio file")
 
-        # Upload to AssemblyAI
-        audio_file = aai.transcripts.upload_audio_file(temp_file_path)
-        transcript = aai.transcripts.create(
-            audio_file,
-            language_code=language
-        )
+            # Initialize AssemblyAI with the API key
+            aai.settings.api_key = os.getenv('ASSEMBLYAI_API_KEY')
+            
+            # Create a transcriber
+            transcriber = aai.Transcriber()
 
-        # Process transcript with ML model
-        processed_text = pipeline.transform([transcript.text])
-        prediction, confidence = ensemble_model.predict(processed_text)
+            # Transcribe the audio file
+            transcript = transcriber.transcribe(temp_file_path)
 
-        result = {
-            'text': transcript.text,
-            'platform': platform,
-            'analysis': {
-                'prediction': bool(prediction[0]),
-                'confidence': float(confidence[0])
-            },
-            'success': True
-        }
+            # Process transcript with ML model
+            processed_text = pipeline.transform([transcript.text])
+            prediction, confidence = ensemble_model.predict(processed_text)
 
-        return jsonify(result)
+            result = {
+                'text': transcript.text,
+                'platform': platform,
+                'analysis': {
+                    'prediction': bool(prediction[0]),
+                    'confidence': float(confidence[0])
+                },
+                'success': True
+            }
+
+            return jsonify(result)
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f'yt-dlp error: {e.stderr}')
+            return jsonify({
+                'error': 'Failed to download video',
+                'details': e.stderr,
+                'platform': platform
+            }), 500
+        finally:
+            # Cleanup with proper error handling
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                logger.error(f'Error cleaning up temp files: {str(cleanup_error)}')
 
     except Exception as e:
         logger.error(f'Transcription Error: {str(e)}')
@@ -632,12 +756,7 @@ def transcribe_recorded():
             'error': 'Failed to transcribe video',
             'details': str(e),
             'platform': detect_platform(video_url)
-        }), 500
-    finally:
-        # Cleanup
-        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-
+        }), 500   
 @app.route('/api/news-stream')
 def news_stream():
     def generate():
@@ -732,24 +851,60 @@ def handle_start_live(data):
         stream_processor = StreamProcessor(request.sid)
         active_streams[request.sid] = stream_processor
 
-        # Start yt-dlp process
-        process = subprocess.Popen([
+        # Configure yt-dlp command with better options
+        command = [
             'yt-dlp',
             '-x',
-            '--audio-format', 'mp3',
+            '--audio-format', 'wav',
+            '--audio-quality', '0',
             '--output', '-',
             '--no-playlist',
             '--live-from-start',
+            '--force-ipv4',  # More stable connection
+            '--retries', '3',  # Retry on failure
+            '--buffer-size', '16K',  # Larger buffer
             url
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ]
+
+        # Start yt-dlp process
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=CHUNK_SIZE
+        )
 
         def process_stream():
             try:
+                def monitor_errors():
+                    for line in process.stderr:
+                        error_msg = line.decode().strip()
+                        if error_msg:
+                            logger.error(f'yt-dlp error: {error_msg}')
+                            socketio.emit('error', {
+                                'error': 'Stream error',
+                                'details': error_msg
+                            }, room=request.sid)
+
+                # Start error monitoring thread
+                error_thread = threading.Thread(target=monitor_errors)
+                error_thread.daemon = True
+                error_thread.start()
+
+                # Process audio stream
                 while True:
-                    chunk = process.stdout.read(1024)
+                    chunk = process.stdout.read(CHUNK_SIZE)
                     if not chunk:
                         break
-                    stream_processor.process_chunk(chunk, len(chunk))
+                    stream_processor.process_chunk(chunk)
+
+                    # Check process status
+                    if process.poll() is not None:
+                        error_output = process.stderr.read()
+                        if error_output:
+                            logger.error(f'yt-dlp process ended with error: {error_output.decode()}')
+                        break
+
             except Exception as e:
                 logger.error(f'Stream processing error: {str(e)}')
                 socketio.emit('error', {
@@ -757,7 +912,10 @@ def handle_start_live(data):
                     'details': str(e)
                 }, room=request.sid)
             finally:
-                process.terminate()
+                try:
+                    process.terminate()
+                except:
+                    pass
                 if request.sid in active_streams:
                     active_streams[request.sid].stop()
                     del active_streams[request.sid]
@@ -778,7 +936,6 @@ def handle_start_live(data):
             'error': 'Failed to process message',
             'details': str(e)
         }, room=request.sid)
-
 # Error Handler
 @app.errorhandler(Exception)
 def handle_error(error):

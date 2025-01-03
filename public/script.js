@@ -157,7 +157,7 @@ const UI = {
 
     createConfidenceChart(confidence) {
         if (!elements.confidenceChart) return;
-// confidence*100
+
         const data = [{
             type: 'indicator',
             mode: 'gauge+number',
