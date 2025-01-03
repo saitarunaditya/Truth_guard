@@ -8,7 +8,7 @@ logging
 feedparser==6.0.10
 requests==2.31.0
 beautifulsoup4==4.12.2
-assemblyai==1.4.0
+assemblyai==0.36.0
 dotenv==1.0.0
 audioop
 concurrent.futures
