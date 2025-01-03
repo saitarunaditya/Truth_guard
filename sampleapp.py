@@ -77,7 +77,7 @@ aai.settings.api_key = os.getenv('ASSEMBLYAI_API_KEY')
 
 # ML Model class definition
 class EnsembleModel:
-    def __init__(self, models):
+    def _init_(self, models):
         self.models = models
 
     def predict(self, X):
@@ -89,7 +89,7 @@ class EnsembleModel:
 
 # Cache Manager
 class CacheManager:
-    def __init__(self):
+    def _init_(self):
         self.caches = {
             'audio': {},
             'news': {},
@@ -153,7 +153,7 @@ cache_manager = CacheManager()
 
 # Buffer Management
 class OptimizedSlidingBuffer:
-    def __init__(self, max_duration=60000, chunk_size=10000):
+    def _init_(self, max_duration=60000, chunk_size=10000):
         self.max_duration = max_duration
         self.chunk_size = chunk_size
         self.chunks = []
@@ -192,7 +192,7 @@ class OptimizedSlidingBuffer:
 
 # Stream Processor
 class StreamProcessor:
-    def __init__(self, socket_id):
+    def _init_(self, socket_id):
         self.socket_id = socket_id
         self.buffer = OptimizedSlidingBuffer()
         self.processing_queue = queue.Queue()
@@ -503,7 +503,7 @@ def fetch_trending_news():
 @app.route('/')
 def index():
     try:
-        return send_from_directory('static', 'index.html')
+        return send_from_directory('public', 'index.html')
     except Exception as e:
         logger.error(f"Error serving index page: {str(e)}")
         return jsonify({
