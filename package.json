@@ -1,0 +1,16 @@
+{
+  "dependencies": {
+    "assemblyai": "^4.8.0",
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "feedparser-promised": "^2.0.1",
+    "path": "^0.12.7",
+    "stream": "^0.0.3",
+    "string-similarity": "^4.0.4",
+    "winston": "^3.17.0",
+    "ws": "^8.18.0"
+  }
+}
